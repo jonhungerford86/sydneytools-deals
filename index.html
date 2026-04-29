@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sydney Tools Deals Tracker</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #e6edf3; line-height: 1.5; }
+  header { background: linear-gradient(135deg, #cb0000 0%, #8b0000 100%); padding: 20px 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+  header h1 { font-size: 24px; font-weight: 700; }
+  header .sub { font-size: 13px; opacity: 0.85; margin-top: 4px; }
+  main { max-width: 1400px; margin: 0 auto; padding: 24px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 24px; padding: 16px; background: #161b22; border-radius: 8px; border: 1px solid #30363d; }
+  .controls label { font-size: 13px; opacity: 0.7; }
+  .controls select, .controls input, .controls button { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+  .controls button { background: #cb0000; border-color: #cb0000; cursor: pointer; font-weight: 600; }
+  .controls button:hover { background: #a00000; }
+  .controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status { padding: 8px 16px; background: #1f2937; border-radius: 6px; font-size: 13px; opacity: 0.8; margin-bottom: 16px; }
+  .status.loading { background: #1e3a8a; opacity: 1; }
+  .status.error { background: #991b1b; opacity: 1; }
+  .stats { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; font-size: 13px; }
+  .stats .stat { padding: 6px 12px; background: #161b22; border-radius: 6px; border: 1px solid #30363d; }
+  .stats .stat strong { color: #4ade80; }
+  .deals { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .deal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; transition: transform 0.15s, border-color 0.15s; position: relative; }
+  .deal:hover { transform: translateY(-2px); border-color: #cb0000; }
+  .deal a { color: inherit; text-decoration: none; }
+  .deal .pct { position: absolute; top: -8px; right: -8px; background: #cb0000; color: white; padding: 6px 10px; border-radius: 6px; font-size: 14px; font-weight: 700; box-shadow: 0 2px 6px rgba(203,0,0,0.5); }
+  .deal .pct.huge { background: #dc2626; font-size: 16px; }
+  .deal .brand { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.6; margin-bottom: 6px; }
+  .deal .name { font-size: 14px; font-weight: 500; margin-bottom: 12px; line-height: 1.4; min-height: 38px; }
+  .deal .price-row { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+  .deal .price { font-size: 22px; font-weight: 700; color: #4ade80; }
+  .deal .was { font-size: 14px; opacity: 0.5; text-decoration: line-through; }
+  .deal .save { font-size: 13px; color: #fbbf24; font-weight: 500; }
+  .deal .tags { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .deal .tag { font-size: 10px; padding: 3px 8px; border-radius: 12px; background: #1e3a8a; color: #93c5fd; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+  .deal .tag.clearance { background: #7c2d12; color: #fdba74; }
+  .deal .tag.dropped { background: #14532d; color: #86efac; }
+  .deal .img { width: 100%; height: 140px; object-fit: contain; background: #fff; border-radius: 6px; margin-bottom: 12px; }
+  footer { text-align: center; padding: 20px; opacity: 0.5; font-size: 12px; }
+  @media (max-width: 600px) {
+    main { padding: 12px; }
+    .controls { padding: 12px; gap: 8px; }
+    .deals { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔧 Sydney Tools Deals</h1>
+  <div class="sub">Live discount tracker — sorted by biggest % off</div>
+</header>
+<main>
+  <div class="controls">
+    <label>Category:
+      <select id="category">
+        <option value="">All categories</option>
+      </select>
+    </label>
+    <label>Min discount:
+      <select id="minPct">
+        <option value="0">Any</option>
+        <option value="10">10%+</option>
+        <option value="20" selected>20%+</option>
+        <option value="30">30%+</option>
+        <option value="50">50%+</option>
+      </select>
+    </label>
+    <label>Sort by:
+      <select id="sort">
+        <option value="pct" selected>% off (biggest first)</option>
+        <option value="saving">$ saved (most first)</option>
+        <option value="price-asc">Price (cheapest first)</option>
+        <option value="price-desc">Price (most expensive first)</option>
+      </select>
+    </label>
+    <label>Filter:
+      <input type="search" id="search" placeholder="brand or name..." style="width: 180px;">
+    </label>
+    <button id="refresh">↻ Refresh</button>
+  </div>
+  <div class="status" id="status">Idle.</div>
+  <div class="stats" id="stats" style="display:none;"></div>
+  <div class="deals" id="deals"></div>
+</main>
+<footer>
+  Hits the Sydney Tools public GraphQL API directly from your browser. No server side.
+  <br>Last refresh: <span id="lastRefresh">never</span>.
+</footer>
+
+<script type="module">
+const ENDPOINT = 'https://sydneytools.com.au/graphql';
+const PAGE_SIZE = 60;
+const PAGES_PER_CAT = 4;
+
+const $ = (id) => document.getElementById(id);
+const els = {
+  category: $('category'), minPct: $('minPct'), sort: $('sort'), search: $('search'),
+  refresh: $('refresh'), status: $('status'), stats: $('stats'), deals: $('deals'),
+  lastRefresh: $('lastRefresh'),
+};
+
+let allDeals = []; // cached current dataset
+let categories = [];
+
+async function gql(query, variables = {}) {
+  const r = await fetch(ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+function setStatus(msg, kind = '') {
+  els.status.textContent = msg;
+  els.status.className = 'status ' + kind;
+}
+
+async function loadCategories() {
+  const r = await gql(`{ viewer { categories(first: 50, inMenu: true) { edges { node { name urlSlug } } } } }`);
+  categories = r.data.viewer.categories.edges
+    .map(e => e.node)
+    .filter(c => !c.urlSlug.includes('/') && c.urlSlug !== 'by-brand');
+  els.category.innerHTML = '<option value="">All categories</option>' +
+    categories.map(c => `<option value="${c.urlSlug}">${c.name}</option>`).join('');
+}
+
+async function fetchCategoryDeals(slug, maxPages = PAGES_PER_CAT) {
+  const deals = [];
+  let cursor = null;
+  for (let p = 0; p < maxPages; p++) {
+    const r = await gql(`query Q($slug: String, $first: Int, $cursor: String, $orderBy: OrderBy) {
+      viewer {
+        categories(first: 1, urlSlug: $slug) {
+          edges { node {
+            products(first: $first, after: $cursor, orderBy: $orderBy) {
+              pageInfo { hasNextPage endCursor }
+              edges { node {
+                id sku name urlSlug
+                price regularPrice
+                clearance priceDrop
+                callForPrice
+                brand { name }
+                mainImage { url }
+              } }
+            }
+          } }
+        }
+      }
+    }`, {
+      slug, first: PAGE_SIZE, cursor,
+      orderBy: { field: 'sorting_factor', direction: 'desc' },
+    });
+    const pc = r.data?.viewer?.categories?.edges?.[0]?.node?.products;
+    if (!pc?.edges?.length) break;
+    for (const edge of pc.edges) {
+      const n = edge.node;
+      if (n.callForPrice || !n.regularPrice || !n.price) continue;
+      if (n.regularPrice <= n.price) continue;
+      deals.push({
+        sku: n.sku, name: n.name, brand: n.brand?.name || '',
+        price: n.price, regularPrice: n.regularPrice,
+        saving: n.regularPrice - n.price,
+        pct: ((n.regularPrice - n.price) / n.regularPrice) * 100,
+        clearance: n.clearance, priceDrop: n.priceDrop,
+        url: `https://sydneytools.com.au/product/${n.urlSlug}`,
+        img: n.mainImage?.url || '',
+        category: slug,
+      });
+    }
+    if (!pc.pageInfo.hasNextPage) break;
+    cursor = pc.pageInfo.endCursor;
+  }
+  return deals;
+}
+
+async function loadDeals() {
+  els.refresh.disabled = true;
+  setStatus('Loading...', 'loading');
+  els.deals.innerHTML = '';
+  try {
+    const selectedCat = els.category.value;
+    const slugs = selectedCat ? [selectedCat] : categories.map(c => c.urlSlug);
+    const all = [];
+    let done = 0;
+    for (const slug of slugs) {
+      try {
+        setStatus(`Loading ${slug}... (${done}/${slugs.length})`, 'loading');
+        const ds = await fetchCategoryDeals(slug, selectedCat ? 8 : 3);
+        all.push(...ds);
+      } catch (e) { console.warn(`skip ${slug}:`, e.message); }
+      done++;
+    }
+    // Dedupe by SKU, keep biggest pct
+    const bySku = new Map();
+    for (const d of all) {
+      const existing = bySku.get(d.sku);
+      if (!existing || existing.pct < d.pct) bySku.set(d.sku, d);
+    }
+    allDeals = [...bySku.values()];
+    els.lastRefresh.textContent = new Date().toLocaleString('en-AU');
+    setStatus(`Loaded ${allDeals.length} unique deals.`);
+    render();
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'error');
+  } finally {
+    els.refresh.disabled = false;
+  }
+}
+
+function render() {
+  const minPct = parseFloat(els.minPct.value);
+  const sort = els.sort.value;
+  const search = els.search.value.trim().toLowerCase();
+
+  let view = allDeals.filter(d => d.pct >= minPct);
+  if (search) {
+    view = view.filter(d => (d.name + ' ' + d.brand).toLowerCase().includes(search));
+  }
+  switch (sort) {
+    case 'pct': view.sort((a, b) => b.pct - a.pct); break;
+    case 'saving': view.sort((a, b) => b.saving - a.saving); break;
+    case 'price-asc': view.sort((a, b) => a.price - b.price); break;
+    case 'price-desc': view.sort((a, b) => b.price - a.price); break;
+  }
+
+  // Stats
+  const totalSavings = view.reduce((sum, d) => sum + d.saving, 0);
+  const avgPct = view.length ? view.reduce((s, d) => s + d.pct, 0) / view.length : 0;
+  const max = view[0];
+  els.stats.style.display = 'flex';
+  els.stats.innerHTML = `
+    <div class="stat">Showing <strong>${view.length}</strong> of ${allDeals.length} deals</div>
+    ${max ? `<div class="stat">Biggest discount: <strong>${max.pct.toFixed(0)}% off</strong></div>` : ''}
+    ${view.length ? `<div class="stat">Avg discount: <strong>${avgPct.toFixed(0)}%</strong></div>` : ''}
+    ${view.length ? `<div class="stat">Total savings if you bought everything: <strong>$${totalSavings.toFixed(0)}</strong></div>` : ''}
+  `;
+
+  // Cards
+  els.deals.innerHTML = view.map(d => `
+    <a href="${d.url}" target="_blank" rel="noopener">
+      <div class="deal">
+        <div class="pct ${d.pct >= 50 ? 'huge' : ''}">${d.pct.toFixed(0)}% off</div>
+        ${d.img ? `<img class="img" src="${d.img}" loading="lazy" alt="">` : ''}
+        <div class="brand">${d.brand}</div>
+        <div class="name">${d.name}</div>
+        <div class="price-row">
+          <span class="price">$${d.price.toFixed(0)}</span>
+          <span class="was">was $${d.regularPrice.toFixed(0)}</span>
+        </div>
+        <div class="save">Save $${d.saving.toFixed(0)}</div>
+        <div class="tags">
+          ${d.clearance ? '<span class="tag clearance">Clearance</span>' : ''}
+          ${d.priceDrop ? '<span class="tag dropped">Price Drop</span>' : ''}
+          ${!d.clearance && !d.priceDrop ? '<span class="tag">Sale</span>' : ''}
+        </div>
+      </div>
+    </a>
+  `).join('');
+}
+
+// Wire up controls
+['minPct', 'sort', 'search'].forEach(k => {
+  els[k].addEventListener('input', render);
+  els[k].addEventListener('change', render);
+});
+els.category.addEventListener('change', loadDeals);
+els.refresh.addEventListener('click', loadDeals);
+
+// Initial load
+(async () => {
+  setStatus('Loading categories...', 'loading');
+  await loadCategories();
+  await loadDeals();
+})();
+</script>
+</body>
+</html>
