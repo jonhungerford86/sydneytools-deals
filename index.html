@@ -93,8 +93,8 @@
 
 <script type="module">
 const ENDPOINT = 'https://sydneytools-deals-proxy.jon-h.workers.dev';
-const PAGE_SIZE = 60;
-const PAGES_PER_CAT = 4;
+const CAT_FETCH_LIMIT = 999;       // server hard cap per category
+const CONCURRENCY = 4;             // parallel category fetches
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -105,6 +105,7 @@ const els = {
 
 let allDeals = []; // cached current dataset
 let categories = [];
+let subcategoriesByCategory = new Map(); // urlSlug -> [{name, urlSlug}]
 
 async function gql(query, variables = {}) {
   const r = await fetch(ENDPOINT, {
@@ -122,61 +123,108 @@ function setStatus(msg, kind = '') {
 }
 
 async function loadCategories() {
-  const r = await gql(`{ viewer { categories(first: 50, inMenu: true) { edges { node { name urlSlug } } } } }`);
+  const r = await gql(`{
+    viewer {
+      categories(first: 50, inMenu: true) {
+        edges { node {
+          name urlSlug
+          subcategories(first: 50) {
+            edges { node { name urlSlug } }
+          }
+        } }
+      }
+    }
+  }`);
   categories = r.data.viewer.categories.edges
     .map(e => e.node)
     .filter(c => !c.urlSlug.includes('/') && c.urlSlug !== 'by-brand');
+  for (const c of categories) {
+    const subs = c.subcategories?.edges?.map(e => e.node) || [];
+    subcategoriesByCategory.set(c.urlSlug, subs);
+  }
   els.category.innerHTML = '<option value="">All categories</option>' +
     categories.map(c => `<option value="${c.urlSlug}">${c.name}</option>`).join('');
 }
 
-async function fetchCategoryDeals(slug, maxPages = PAGES_PER_CAT) {
-  const deals = [];
-  let cursor = null;
-  for (let p = 0; p < maxPages; p++) {
-    const r = await gql(`query Q($slug: String, $first: Int, $cursor: String, $orderBy: OrderBy) {
-      viewer {
-        categories(first: 1, urlSlug: $slug) {
-          edges { node {
-            products(first: $first, after: $cursor, orderBy: $orderBy) {
-              pageInfo { hasNextPage endCursor }
-              edges { node {
-                id sku name urlSlug
-                price regularPrice
-                clearance priceDrop
-                callForPrice
-                brand { name }
-                mainImage { url }
-              } }
-            }
-          } }
-        }
+async function fetchProducts(slug, subcategoryUrlSlug = null) {
+  const r = await gql(`query Q($slug: String, $sub: String, $first: Int, $orderBy: OrderBy) {
+    viewer {
+      categories(first: 1, urlSlug: $slug) {
+        edges { node {
+          products(first: $first, subcategoryUrlSlug: $sub, orderBy: $orderBy) {
+            edges { node {
+              id sku name urlSlug
+              price regularPrice
+              clearance priceDrop
+              callForPrice
+              brand { name }
+              mainImage { url }
+            } }
+          }
+        } }
       }
-    }`, {
-      slug, first: PAGE_SIZE, cursor,
-      orderBy: { field: 'sorting_factor', direction: 'desc' },
-    });
-    const pc = r.data?.viewer?.categories?.edges?.[0]?.node?.products;
-    if (!pc?.edges?.length) break;
-    for (const edge of pc.edges) {
-      const n = edge.node;
-      if (n.callForPrice || !n.regularPrice || !n.price) continue;
-      if (n.regularPrice <= n.price) continue;
-      deals.push({
-        sku: n.sku, name: n.name, brand: n.brand?.name || '',
-        price: n.price, regularPrice: n.regularPrice,
-        saving: n.regularPrice - n.price,
-        pct: ((n.regularPrice - n.price) / n.regularPrice) * 100,
-        clearance: n.clearance, priceDrop: n.priceDrop,
-        url: `https://sydneytools.com.au/product/${n.urlSlug}`,
-        img: n.mainImage?.url || '',
-        category: slug,
-      });
     }
-    if (!pc.pageInfo.hasNextPage) break;
-    cursor = pc.pageInfo.endCursor;
+  }`, {
+    slug, sub: subcategoryUrlSlug,
+    first: CAT_FETCH_LIMIT,
+    orderBy: { field: 'price', direction: 'desc' },
+  });
+  const edges = r.data?.viewer?.categories?.edges?.[0]?.node?.products?.edges || [];
+  const deals = [];
+  for (const edge of edges) {
+    const n = edge.node;
+    if (n.callForPrice || !n.regularPrice || !n.price) continue;
+    if (n.regularPrice <= n.price) continue;
+    deals.push({
+      sku: n.sku, name: n.name, brand: n.brand?.name || '',
+      price: n.price, regularPrice: n.regularPrice,
+      saving: n.regularPrice - n.price,
+      pct: ((n.regularPrice - n.price) / n.regularPrice) * 100,
+      clearance: n.clearance, priceDrop: n.priceDrop,
+      url: `https://sydneytools.com.au/product/${n.urlSlug}`,
+      img: n.mainImage?.url || '',
+      category: slug,
+    });
   }
-  return deals;
+  return { deals, totalScanned: edges.length };
+}
+
+// Build the full list of (category, subcategory|null) tasks needed to cover everything past the 999 cap
+function buildScanTasks(categorySlug) {
+  const tasks = [];
+  const slugs = categorySlug ? [categorySlug] : categories.map(c => c.urlSlug);
+  for (const slug of slugs) {
+    const subs = subcategoriesByCategory.get(slug) || [];
+    if (subs.length === 0) {
+      tasks.push({ slug, sub: null, label: slug });
+    } else {
+      // Always fetch the parent category (covers items not in any subcategory) plus each subcategory
+      tasks.push({ slug, sub: null, label: `${slug} (root)` });
+      for (const s of subs) tasks.push({ slug, sub: s.urlSlug, label: `${slug}/${s.urlSlug}` });
+    }
+  }
+  return tasks;
+}
+
+async function runWithConcurrency(tasks, fn, onProgress) {
+  const results = [];
+  let i = 0, done = 0;
+  async function worker() {
+    while (i < tasks.length) {
+      const idx = i++;
+      const task = tasks[idx];
+      try {
+        const result = await fn(task);
+        results.push(...result);
+      } catch (e) {
+        console.warn(`task failed: ${task.label}`, e.message);
+      }
+      done++;
+      onProgress(done, tasks.length, task.label);
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  return results;
 }
 
 async function loadDeals() {
@@ -185,26 +233,30 @@ async function loadDeals() {
   els.deals.innerHTML = '';
   try {
     const selectedCat = els.category.value;
-    const slugs = selectedCat ? [selectedCat] : categories.map(c => c.urlSlug);
-    const all = [];
-    let done = 0;
-    for (const slug of slugs) {
-      try {
-        setStatus(`Loading ${slug}... (${done}/${slugs.length})`, 'loading');
-        const ds = await fetchCategoryDeals(slug, selectedCat ? 8 : 3);
-        all.push(...ds);
-      } catch (e) { console.warn(`skip ${slug}:`, e.message); }
-      done++;
-    }
-    // Dedupe by SKU, keep biggest pct
+    const tasks = buildScanTasks(selectedCat);
+    const t0 = performance.now();
+
+    const allRaw = await runWithConcurrency(
+      tasks,
+      async (task) => {
+        const { deals } = await fetchProducts(task.slug, task.sub);
+        return deals;
+      },
+      (done, total, label) => {
+        setStatus(`Scanning... ${done}/${total} — ${label}`, 'loading');
+      }
+    );
+
+    // Dedupe by SKU, keep biggest pct (parent + sub overlap is expected)
     const bySku = new Map();
-    for (const d of all) {
+    for (const d of allRaw) {
       const existing = bySku.get(d.sku);
       if (!existing || existing.pct < d.pct) bySku.set(d.sku, d);
     }
     allDeals = [...bySku.values()];
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
     els.lastRefresh.textContent = new Date().toLocaleString('en-AU');
-    setStatus(`Loaded ${allDeals.length} unique deals.`);
+    setStatus(`Loaded ${allDeals.length} unique deals from ${tasks.length} scans in ${elapsed}s.`);
     render();
   } catch (e) {
     setStatus('Error: ' + e.message, 'error');
